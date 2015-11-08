@@ -1,0 +1,1 @@
+Amiga port and makefile by Peter Gordon (pete@shagged.org)
