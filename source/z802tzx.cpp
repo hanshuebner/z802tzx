@@ -1,8 +1,39 @@
+/* z802tzx.cpp: snapshot to .tzx tape image converter
+   Copyright (c) 1997-2001 ThunderWare Research Center, written by
+                           Martijn van der Heide,
+		 2003 Tomaz Kac <tomcat@sgn.net>,
+		      Simon Owen <simon.owen@simcoupe.org>,
+		 2003 Philip Kendall <pak21-spectrum@srcf.ucam.org>
 
-#include "stdafx.h"
+   This program is free software; you can redistribute it and/or modify
+   it under the terms of the GNU General Public License as published by
+   the Free Software Foundation; either version 2 of the License, or
+   (at your option) any later version.
+
+   This program is distributed in the hope that it will be useful,
+   but WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   GNU General Public License for more details.
+
+   You should have received a copy of the GNU General Public License
+   along with this program; if not, write to the Free Software
+   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+
+*/
+
+#include <config.h>
+
+#include "StdAfx.h"
 #include <string.h>
 
 #include "loader.h"
+
+#if !defined( HAVE_STRICMP ) && defined( HAVE_STRCASECMP )
+static int stricmp(const char * s1, const char * s2)
+{
+  return strcasecmp(s1, s2);
+}
+#endif
 
 struct Snapshot
 {
@@ -47,7 +78,7 @@ char info1[256]="                                ";
 char info2[256]="                                ";
 
 int snap_type;				// -1 = Not recognised
-							//  0 = Z80
+							//  0 = Z80, 1 = SNA
 int snap_len;
 byte snap_bin[256000];
 byte WorkBuffer[65535];
@@ -59,12 +90,12 @@ bool external = false;
 char external_filename[512];
 byte bright = 0;
 
-void print_error(const char * text)
+void print_error(char * text)
 {
 	printf("\n-- ERROR : %s\n",text);
 }
 
-void print_verbose(const char * text)
+void print_verbose(char * text)
 {
 	if (verbose)
 	{
@@ -484,11 +515,11 @@ void print_usage(bool title)
 {
 	if (title)
 	{
-		printf("\nZ80 Snapshot to TZX Tape Converter  v1.0\n");
+		printf("\nZ80 Snapshot to TZX Tape Converter  v1.2\n");
 		printf(  "\n  ->by Tom-Cat<-\n\n");
 	}
 	printf("Usage:\n\n");
-	printf("  Z802TZX Filename.z80 [Options]\n\n");
+	printf("  Z802TZX Filename.[z80|sna] [Options]\n\n");
 	printf("  Options:\n");
 	printf("  -v    Verbose Output (Info on conversion)\n");
 	printf("  -s n  Loading Speed (n: 0=1500  1=2250  2=3000  3=6000 bps) Default: 3\n");
@@ -643,6 +674,11 @@ bool get_type()
 		snap_type = 0;
 		return true;
 	}
+	else if (!stricmp(ext,"sna"))
+	{
+		snap_type = 1;
+		return true;
+	}
 
 	snap_type = -1;
 	return false;
@@ -683,7 +719,7 @@ bool import_z80()
 	snap.reg_pc  = gw(&snap_bin[6]);
 	snap.reg_sp  = gw(&snap_bin[8]);
 	snap.reg_i   = snap_bin[10];
-	snap.reg_r   = snap_bin[11];					// least 7 bits of R
+	snap.reg_r   = snap_bin[11]&0x7f;				// least 7 bits of R
 	snap.reg_r  |= 128*(z80_12&1);					// bit 7 of R
 	snap.border  = (z80_12>>1)&7;					// Border in bits 1,2,3
 	snap.reg_de  = gw(&snap_bin[13]);
@@ -831,6 +867,94 @@ bool import_z80()
 	return true;
 }
 
+// SNA support added by Simon Owen <simon.owen@simcoupe.org>
+bool import_sna()
+{
+	char tempc[256];
+
+	snap.reg_i   = snap_bin[0];
+	snap.reg_hl2 = gw(&snap_bin[1]);
+	snap.reg_de2 = gw(&snap_bin[3]);
+	snap.reg_bc2 = gw(&snap_bin[5]);
+	snap.reg_f2  = snap_bin[7];
+	snap.reg_a2  = snap_bin[8];
+	snap.reg_hl  = gw(&snap_bin[9]);
+	snap.reg_de  = gw(&snap_bin[11]);
+	snap.reg_bc  = gw(&snap_bin[13]);
+	snap.reg_iy  = gw(&snap_bin[15]);
+	snap.reg_ix  = gw(&snap_bin[17]);
+	snap.ei      = !!(snap_bin[19]&4);
+	snap.iff2    = snap.ei;
+	snap.reg_r   = snap_bin[20];
+	snap.reg_f   = snap_bin[21];
+	snap.reg_a   = snap_bin[22];
+	snap.reg_sp  = gw(&snap_bin[23]);
+	snap.inter_mode = snap_bin[25]&3;				// Interrupt mode in bits 0,1
+	snap.border  = snap_bin[26]&7;					// Border in bits 0..2
+
+	// 48K snapshots are a fixed length
+	if (snap_len == 49179)
+	{
+		// Ensure the stack is not in ROM, as we need to POP the PC value
+		if (snap.reg_sp < 16384)
+		{
+			print_error("Stack is in ROM, PC value lost!");
+			return false;
+		}
+
+		// Load the 48K RAM into the required blocks
+		memcpy(snap.page[5], &snap_bin[27      ], 16384);
+		memcpy(snap.page[1], &snap_bin[27+16384], 16384);
+		memcpy(snap.page[2], &snap_bin[27+32768], 16384);
+
+		// Perform a manual RET (EI state was restored above for a RETN)
+		byte *stack = &snap_bin[27+snap.reg_sp-16384];
+		snap.reg_pc = gw(stack);
+		stack[0] = stack[1] = 0;
+		snap.reg_sp += 2;
+
+		print_verbose_registers();
+		print_verbose("Snapshot is 48K");
+
+		return true;
+	}
+
+	// 128K snapshots are one of two lengths, depending on whether a page block is repeated
+	if (snap_len != 131103 && snap_len != 147487)
+	{
+		print_error("Snapshot file length is invalid");
+		return false;
+	}
+
+	snap.mode128 = true;
+	snap.reg_pc  =   gw(&snap_bin[27+49152]);		// PC, stored separately for 128K snapshots
+	snap.last_out_7ffd = snap_bin[27+49152+2];		// 128K paging port
+
+	print_verbose_registers();
+	sprintf(tempc, "Snapshot is 128K, Last-Out 7ffd value:%02x", snap.last_out_7ffd);
+	print_verbose(tempc);
+
+	// Read the current 48K of paged memory
+	byte curpage = snap.last_out_7ffd&7;
+	memcpy(snap.page[5],       &snap_bin[27      ], 16384);
+	memcpy(snap.page[2],       &snap_bin[27+16384], 16384);
+	memcpy(snap.page[curpage], &snap_bin[27+32768], 16384);		// Could even be 5 or 2 again!
+
+	// Read the remaining pages, skipping ones we already have
+	byte *pagedata = &snap_bin[27+49152+4];
+	for (byte page = 0 ; page <= 7 ; page++)
+	{
+		// Skip pages we've already read
+		if (page != 2 && page != 5 && page != curpage)
+		{
+			memcpy(snap.page[page], pagedata, 16384);
+			pagedata += 16384;
+		}
+	}
+
+	return true;
+}
+
 bool load_snap(void)
 {
 	bool succ = false;
@@ -856,6 +980,10 @@ bool load_snap(void)
 	case 0:	//Z80
 		print_verbose("Snapshot Type is Z80\n");
 		succ = import_z80();
+		break;
+	case 1: //SNA
+		print_verbose("Snapshot Type is SNA\n");
+		succ = import_sna();
 		break;
 	}
 
@@ -939,7 +1067,7 @@ static struct TurboLoadVars
 } turbo_vars[4] = {{ 0x80 + 41, 20, 2168, 667, 855 },   /*  1364 bps - uses the normal ROM timing values! */
                    { 0x80 + 24, 11, 2000, 600, 518 },   /*  2250 bps */
                    { 0x80 + 18,  7, 1900, 550, 389 },   /*  3000 bps */
-                   { 0x80 +  7,  3, 1700, 450, 195 }};  /*  6000 bps */
+                   { 0x80 +  7,  3, 1700, 450, 200 }};  /*  6000 bps */ // 197 works with Spectaculator
 
 /*
   COMPARE is on 94
