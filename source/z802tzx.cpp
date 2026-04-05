@@ -21,18 +21,13 @@
 
 */
 
-#include <config.h>
-
-#include "StdAfx.h"
+#include "stdafx.h"
 #include <string.h>
 
 #include "loader.h"
 
-#if !defined( HAVE_STRICMP ) && defined( HAVE_STRCASECMP )
-static int stricmp(const char * s1, const char * s2)
-{
-  return strcasecmp(s1, s2);
-}
+#ifndef HAVE_STRICMP
+#define stricmp strcasecmp
 #endif
 
 struct Snapshot
@@ -114,9 +109,9 @@ static bool decrunch_z80 (byte *BufferIn, word BlLength, byte *BufferOut, word O
 /**********************************************************************************************************************************/
 
 {
-  word register IndexIn;
-  word register IndexOut       = 0;
-  word register RunTimeLength;
+  word IndexIn;
+  word IndexOut       = 0;
+  word RunTimeLength;
 
   for (IndexIn = 0 ; IndexIn < BlLength ; IndexIn ++)                                       /* Decrunch it into the second buffer */
   {
@@ -152,10 +147,10 @@ static void crunch_z80 (byte *BufferIn, word BlLength, byte *BufferOut, word *Cr
 /**********************************************************************************************************************************/
 
 {
-  word register IndexIn;
-  word register IndexOut       = 0;
+  word IndexIn;
+  word IndexOut       = 0;
   word          LengthOut;
-  word register RunTimeLength;
+  word RunTimeLength;
   bool          CrunchIt       = false;
   byte          RepeatedCode;
   byte          PrevByte       = 0x00;
@@ -322,7 +317,7 @@ bool test_rev_decz80(byte *source, int final_len, int source_len)
 
 static void reverse_block (byte *BufferOut, byte *BufferIn)
 {
-  word register  Cnt;
+  word  Cnt;
   byte          *BIn;
   byte          *BOut;
 
